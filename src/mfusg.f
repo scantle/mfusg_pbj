@@ -34,7 +34,7 @@ C
      &           'BCT ', 'FHB ', 'RES ', 'STR ', 'IBS ', 'CHD ', 'HFB6',  ! 21
      &           'LAK ', 'LPF ', 'DIS ', 'DISU', 'PVAL', '    ', 'HOB ',  ! 28
      &           'CLN ', '    ', 'ZONE', 'MULT', 'DROB', 'RVOB', 'GBOB',  ! 35
-     &           'GNC ', '    ', 'CHOB', 'ETS ', 'DRT ', '    ', 'GMG ',  ! 42
+     &           'GNC ', '    ', 'CHOB', 'ETS ', 'DRT ', 'PBJ ', 'GMG ',  ! 42
      &           'hyd ', 'SFR ', '    ', 'GAGE', 'LVDA', '    ', 'lmt6',  ! 49
      &           'MNW1', '    ', '    ', 'KDEP', 'SUB ', 'UZF ', 'gwm ',  ! 56
      &           'SWT ', 'PATH', '    ', '    ', '    ', '    ', '    ',  ! 63
@@ -108,6 +108,7 @@ CSP        IF(IDEALLOC_LPF.EQ.2) CALL GWF2LPFU1DA
       IF(IUNIT(39).GT.0) CALL GWF2ETS8U1AR(IUNIT(39),IUNIT(15))
       IF(IUNIT(40).GT.0) CALL GWF2DRT8U1AR(IUNIT(40))
       IF(IUNIT(54).GT.0) CALL GWF2SUB7U1AR(IUNIT(54))
+      IF(IUNIT(41).GT.0) CALL GWF2PBJU1AR(IUNIT(41))
 C---------------------------------------------------------------------------
 C6F----- SOLVER INPUT
       IF(IUNIT(13).GT.0) THEN
