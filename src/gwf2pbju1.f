@@ -4,11 +4,39 @@ C ---- by Leland Scantlebury and James R. Craig
 C -----------------------------------------------------------------------------
       module pbjmodule
         integer :: nsegments
-        integer, allocatable, dimension(:,:) :: segnodes    ! Nodes to which flow is interpolated, for each segment
-        real,    allocatable, dimension(:,:) :: baryweights ! Barycentric coordinates for segment start/end points
-        real,    allocatable, dimension(:,:) :: midbweights ! Segment midpoint barycentric coordinates
-        real,    allocatable, dimension(:,:) :: segelevs    ! Segment start/end point streambed elevations
-        real,    allocatable, dimension(:)   :: cond        ! Segment conductivity
+        integer, allocatable, dimension(:,:)   :: segnodes  ! Nodes to which flow is interpolated, for each segment
+        integer, allocatable, dimension(:,:,:) :: segIA     ! Off-diagonal location in AMAT of nodes listed in segia
+        real*8,  allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
+        real*8,  allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
+        real*8,  allocatable, dimension(:)     :: cond      ! Segment conductivity
+        
+      contains
+C -----------------------------------------------------------------------------
+        integer function find_n2m_inJA(n, m) result(ija)
+          use GLOBAL,     ONLY:IA,JA
+          integer, intent(in)       :: n,m
+          integer                   :: i
+      
+          ija = -1
+          if (m==n) then  ! Small cheat
+            ija = IA(n)
+            return
+          end if
+          do i=1, (IA(n+1)-IA(n)-1)    ! num nodes attached to n
+            if (JA(IA(n)+i) == m) then
+              ija = IA(n)+i
+              exit                     ! Leave loop if number found
+            end if
+          end do
+          if (ija < 0) then            ! Error in number never found
+            write(IOUT,*) ' UNCONNECTED NODES LISTED FOR PBJ SEGMENT'
+            write(IOUT,*) 'SEGMENT: ', i, 'NODES: ', m, n
+            call USTOP(' ')
+          end if
+          return
+        end function find_n2m_inJA
+C -----------------------------------------------------------------------------
+      
       end module pbjmodule
       
       
@@ -23,9 +51,9 @@ C     ******************************************************************
 C
 C     SPECIFICATIONS:
 C     ------------------------------------------------------------------
-      USE GLOBAL,       ONLY:IOUT
+      USE GLOBAL,       ONLY:IOUT,IA,JA,AMAT
       use pbjmodule
-      integer  :: i, j, k
+      integer  :: i, j, k, m, n
       integer, allocatable, dimension(:) :: nodetemp
       real, allocatable, dimension(:) :: weighttemp, elevtemp
       character*200 line
@@ -64,22 +92,25 @@ C-----Read segment barycentric weights
       
 C-----Read segment start/end elevations
       allocate(elevtemp(nsegments*2))           ! 1 elevation for every segment start/end
-      call U1DREL(elevtemp,ANAME(2),nsegments*2,K,IN,IOUT)
+      call U1DREL(elevtemp,ANAME(3),nsegments*2,K,IN,IOUT)
       
-C----Read conductances (currently do not vary by stress period)
+C-----Read conductances (currently do not vary by stress period)
       call U1DREL(cond,ANAME(4),nsegments,K,IN,IOUT)
 
 C-----Move temporary arrays to their final resting places
       do i=1, nsegments
-        do j=1, 3
+        do j=1, 3                               ! Loop over nodes
           segnodes(i,j) = nodetemp((i-1)*3 + j)
-          baryweights(i,j)   = weighttemp((i-1)*6 + j)
-          baryweights(i,j+3) = weighttemp((i-1)*6 + j+3)
+          n = segnodes(i,j)                     ! current diagonal node
+          bw(i,j)   = weighttemp((i-1)*6 + j)
+          bw(i,j+3) = weighttemp((i-1)*6 + j+3)
+C-----Find connected nodes in JA (needed later for entering into AMAT)
+          do k=1, 3
+            m = nodetemp((i-1)*3 + k)           ! current off-diag node
+            segIA(i,j,k) = find_n2m_inJA(n,m)
+          end do
         end do
-        do j=1, 3
-          midbweights(i,j) = (baryweights(i,j) + baryweights(i,j+3)) / 2
-        end do
-        do j=1, 2
+        do j=1, 2                               ! Loop over segment ends
           segelevs(i,j) = elevtemp((i-1)*2 + j)
         end do
       end do
@@ -125,15 +156,15 @@ C -----------------------------------------------------------------------------
 
       subroutine GWF2PBJU1FM
 C     ******************************************************************
-C     ADD DRAIN FLOW TO SOURCE TERM
+C     ADD SEGMENT FLOW TO SOURCE TERM
 C     ******************************************************************
 C
 C     SPECIFICATIONS:
 C     ------------------------------------------------------------------
       use pbjmodule
       use GLOBAL,     ONLY:IBOUND,HNEW,RHS,AMAT,IA
-      integer            :: i, j, k
-      double precision   :: heads(2), del(2), flows(3), middel, midhead
+      integer            :: h, i, j, k, N, ija
+      double precision   :: heads(2), bwe(2), hw
       double precision, parameter :: zero=0.0D0
 C     ------------------------------------------------------------------
       
@@ -142,21 +173,30 @@ C-----If no segments, return
       
 C-----Loop over segments
       do i=1, nsegments
-C-------Interpolate to get segment heads (start/end)
+C-----Interpolate to get segment heads (start/end)
         heads = 0
         do j=1,3
-          heads(1) = heads(1) + HNEW(segnodes(i,j)) * baryweights(i,j  )
-          heads(2) = heads(2) + HNEW(segnodes(i,j)) * baryweights(i,j+3)
+          heads(1) = heads(1) + HNEW(segnodes(i,j)) * bw(i,j  )
+          heads(2) = heads(2) + HNEW(segnodes(i,j)) * bw(i,j+3)
+C-----Calculate "effective" weights (0 if head below elevation)
+          bwe(1)   = bw(i,j)
+          bwe(2) = bw(i,j+3)
+          if (heads(1) <= segelevs(i,1)) bwe(1) = 0
+          if (heads(2) <= segelevs(i,2)) bwe(2) = 0
+C-----For each barycentric coordinate add conductances to nodes in AMAT
+          n = segnodes(i,j)                     ! Current node
+          do k=1,3
+            hw = (bwe(1)*bw(i,k)+bwe(2)*bw(i,k+3))/2
+          ! Figure out where to put it
+            ija = segIA(i,j,k)
+            AMAT(ija) = AMAT(ija) - cond(i)*hw
+          end do
+          
+C-----Add to RHS
+          RHS(N) = RHS(N)-cond(i)*(bwe(1)*segelevs(i,1)
+     1                           + bwe(2)*segelevs(i,2))/2
         end do
-C-------Calculate segment midpoint head gradient delta
-        del(1)   = heads(1) - segelevs(i,1)
-        del(2)   = heads(2) - segelevs(i,2)
-        middel = (max(del(1), zero) + max(del(2), zero)) / 2
-C-------Calculate flows
-        do j=1,3
-          flows(j) = cond(i) * midbweights(i,j) * middel
-        end do
-      end do
+      end do      
       
       end subroutine GWF2PBJU1FM
       
@@ -165,12 +205,12 @@ C -- PBJ Helper Routines
 C -----------------------------------------------------------------------------
       
       subroutine initialize_pbj_arrays()
-      use pbjmodule
+        use pbjmodule
 C     Package currently assumes voronoi grid with triangular interpolation
 C     Thus, three nodes per segment
         allocate(segnodes   (nsegments, 3),
-     1           baryweights(nsegments, 6),
-     2           midbweights(nsegments, 3),
+     1           segIA      (nsegments, 3, 3),
+     2           bw         (nsegments, 6),
      3           segelevs   (nsegments, 2),
      4           cond       (nsegments))
       end subroutine initialize_pbj_arrays
@@ -178,9 +218,10 @@ C     Thus, three nodes per segment
 C -----------------------------------------------------------------------------
 
       subroutine destory_pbj_arrays()
-      use pbjmodule
+        use pbjmodule
       
-      deallocate(segnodes, baryweights, segelevs, cond)
+        deallocate(segnodes, bw, segelevs, cond)
       
       end subroutine destory_pbj_arrays
 
+C -----------------------------------------------------------------------------
