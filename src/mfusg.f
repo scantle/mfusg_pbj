@@ -262,6 +262,7 @@ CSP            IF(IUNIT(50).GT.0) CALL GWF2MNW7U1FM(KKITER,IUNIT(1),
 CSP     1                               IUNIT(23),IUNIT(37),IGRID)
             IF(IUNIT(54).GT.0) CALL GWF2SUB7U1FM(KKPER,KKITER,IUNIT(9))
 !csp            IF(IUNIT(57).GT.0) CALL GWF2SWT7U1FM(KKPER,IGRID)
+            IF(IUNIT(41).GT.0) CALL GWF2PBJU1FM
 C----------------------------------------------------------------------------
 C7C2D---MAKE ONE CUT AT AN APPROXIMATE SOLUTION.
             IF (IUNIT(13).GT.0) THEN

@@ -8,7 +8,7 @@ C -----------------------------------------------------------------------------
         integer, allocatable, dimension(:,:,:) :: segIA     ! Off-diagonal location in AMAT of nodes listed in segia
         real*8,  allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
         real*8,  allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
-        real*8,  allocatable, dimension(:)     :: cond      ! Segment conductivity
+        real,    allocatable, dimension(:)     :: cond      ! Segment conductivity
         
       contains
 C -----------------------------------------------------------------------------
@@ -173,26 +173,29 @@ C-----If no segments, return
       
 C-----Loop over segments
       do i=1, nsegments
-C-----Interpolate to get segment heads (start/end)
-        heads = 0
+C-----Interpolate to get current segment heads (start/end)
+        heads = zero
         do j=1,3
           heads(1) = heads(1) + HNEW(segnodes(i,j)) * bw(i,j  )
           heads(2) = heads(2) + HNEW(segnodes(i,j)) * bw(i,j+3)
+        end do
+C-----Move to next segment if heads are both below elevation
+        if ((heads(1) <= segelevs(i,1)).and. 
+     1      (heads(2) <= segelevs(i,2))) cycle
 C-----Calculate "effective" weights (0 if head below elevation)
-          bwe(1)   = bw(i,j)
+        do j=1,3
+          bwe(1) = bw(i,j)
           bwe(2) = bw(i,j+3)
-          if (heads(1) <= segelevs(i,1)) bwe(1) = 0
-          if (heads(2) <= segelevs(i,2)) bwe(2) = 0
+          if (heads(1) <= segelevs(i,1)) bwe(1) = zero
+          if (heads(2) <= segelevs(i,2)) bwe(2) = zero
 C-----For each barycentric coordinate add conductances to nodes in AMAT
-          n = segnodes(i,j)                     ! Current node
+          n = segnodes(i,j)                           ! Current node
           do k=1,3
-            hw = (bwe(1)*bw(i,k)+bwe(2)*bw(i,k+3))/2
-          ! Figure out where to put it
+            hw = (bwe(1)*bw(i,k)+bwe(2)*bw(i,k+3))/2  ! head "weight"
             ija = segIA(i,j,k)
             AMAT(ija) = AMAT(ija) - cond(i)*hw
           end do
-          
-C-----Add to RHS
+C-----Add non-head related terms to RHS
           RHS(N) = RHS(N)-cond(i)*(bwe(1)*segelevs(i,1)
      1                           + bwe(2)*segelevs(i,2))/2
         end do
