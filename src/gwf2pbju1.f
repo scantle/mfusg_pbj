@@ -9,6 +9,7 @@ C -----------------------------------------------------------------------------
         real*8,  allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
         real*8,  allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
         real,    allocatable, dimension(:)     :: cond      ! Segment conductivity
+        double precision, parameter :: zero=0.0D0
         
       contains
 C -----------------------------------------------------------------------------
@@ -164,8 +165,7 @@ C     ------------------------------------------------------------------
       use pbjmodule
       use GLOBAL,     ONLY:IBOUND,HNEW,RHS,AMAT,IA
       integer            :: h, i, j, k, N, ija
-      double precision   :: heads(2), bwe(2), hw
-      double precision, parameter :: zero=0.0D0
+      double precision   :: heads(2), bwe(2), hw, debug, estflow
 C     ------------------------------------------------------------------
       
 C-----If no segments, return
@@ -184,6 +184,7 @@ C-----Move to next segment if heads are both below elevation
      1      (heads(2) <= segelevs(i,2))) cycle
 C-----Calculate "effective" weights (0 if head below elevation)
         do j=1,3
+          debug = zero
           bwe(1) = bw(i,j)
           bwe(2) = bw(i,j+3)
           if (heads(1) <= segelevs(i,1)) bwe(1) = zero
@@ -194,14 +195,93 @@ C-----For each barycentric coordinate add conductances to nodes in AMAT
             hw = (bwe(1)*bw(i,k)+bwe(2)*bw(i,k+3))/2  ! head "weight"
             ija = segIA(i,j,k)
             AMAT(ija) = AMAT(ija) - cond(i)*hw
+            debug = debug + cond(i) * hw * HNEW(segnodes(i,k))
           end do
 C-----Add non-head related terms to RHS
-          RHS(N) = RHS(N)-cond(i)*(bwe(1)*segelevs(i,1)
-     1                           + bwe(2)*segelevs(i,2))/2
+          estflow = -cond(i)*((bwe(1)*segelevs(i,1)
+     1                            + bwe(2)*segelevs(i,2)))/2
+          RHS(N) = RHS(N)-cond(i)*((bwe(1)*segelevs(i,1)
+     1                            + bwe(2)*segelevs(i,2)))/2
+!          write(*,*) '     Segment ', i
+!          write(*,*) '     Heads = ', heads(1), heads(2)
+!          write(*,*) 'Total AMAT = ', debug
+!          write(*,*) '       RHS = ', estflow
+!          write(*,*) '      Flow = ', debug + estflow
         end do
       end do      
       
       end subroutine GWF2PBJU1FM
+
+C -----------------------------------------------------------------------------
+
+      subroutine GWF2PBJU1BD(KSTP,KPER)
+C     ******************************************************************
+C     CALCULATE VOLUMETRIC BUDGET FOR POLYLINE BOUNDARY JUNCTIONS
+C     ******************************************************************
+C
+C        SPECIFICATIONS:
+C     ------------------------------------------------------------------
+      USE GLOBAL,      ONLY:IOUT,NCOL,NROW,NLAY,IBOUND,HNEW,BUFF,IUNSTR,
+     *                 NODES,NEQS,INCLN
+      USE CLN1MODULE,  ONLY:NCLNNDS,ICLNCB 
+      USE GWFBASMODULE,ONLY:MSUM,ICBCFL,IAUXSV,DELT,PERTIM,TOTIM,
+     1                      VBVL,VBNM
+      use pbjmodule
+C
+      character*16          :: TEXT
+      integer               :: i, j
+      double precision      :: Q, RATOUT, ROUT, heads(2), avgover
+C
+      DATA TEXT /'    PBJ SEGMENTS'/
+C     ------------------------------------------------------------------
+      
+C-----TODO: Handle cell-by-cell flow calculations/output
+      
+C-----No segments, no service
+      if (nsegments <= 0) return
+      
+C-----Loop over segments calculate total segment flow
+      RATOUT = zero
+      do i=1, nsegments
+C-----Interpolate heads to segment start/end
+        heads = zero
+        do j=1,3
+          heads(1) = heads(1) + HNEW(segnodes(i,j)) * bw(i,j  )
+          heads(2) = heads(2) + HNEW(segnodes(i,j)) * bw(i,j+3)
+        end do
+C-----Move to next segment if heads are both below elevation
+        if ((heads(1) <= segelevs(i,1)).and. 
+     1      (heads(2) <= segelevs(i,2))) cycle
+C-----Calculate flow out of segment, add to cumulative count
+        heads(1) = max(heads(1)-segelevs(i,1), zero)
+        heads(2) = max(heads(2)-segelevs(i,2), zero)
+        avgover = (heads(1)+heads(2))/2
+        Q = -cond(i) * avgover               ! Sign convention: negative = leaving aquifer
+        RATOUT = RATOUT - Q
+      end do
+      
+C-----MOVE RATES,VOLUMES & LABELS INTO ARRAYS FOR PRINTING.
+      ROUT=RATOUT
+      VBVL(3,MSUM)=zero
+      VBVL(4,MSUM)=ROUT
+      VBVL(2,MSUM)=VBVL(2,MSUM)+ROUT*DELT
+      VBNM(MSUM)=TEXT
+      
+C-----INCREMENT BUDGET TERM COUNTER.
+      MSUM=MSUM+1
+      return
+      end subroutine GWF2PBJU1BD
+
+C -----------------------------------------------------------------------------
+
+      SUBROUTINE GWF2PBJU1DA
+C-----Deallocate PBJ MEMORY
+      USE pbjmodule
+C
+        deallocate(segnodes, bw, segelevs, cond)
+C
+      RETURN
+      END
       
 C *****************************************************************************
 C -- PBJ Helper Routines
@@ -209,22 +289,11 @@ C -----------------------------------------------------------------------------
       
       subroutine initialize_pbj_arrays()
         use pbjmodule
-C     Package currently assumes voronoi grid with triangular interpolation
-C     Thus, three nodes per segment
         allocate(segnodes   (nsegments, 3),
      1           segIA      (nsegments, 3, 3),
      2           bw         (nsegments, 6),
      3           segelevs   (nsegments, 2),
      4           cond       (nsegments))
       end subroutine initialize_pbj_arrays
-
-C -----------------------------------------------------------------------------
-
-      subroutine destory_pbj_arrays()
-        use pbjmodule
-      
-        deallocate(segnodes, bw, segelevs, cond)
-      
-      end subroutine destory_pbj_arrays
 
 C -----------------------------------------------------------------------------
