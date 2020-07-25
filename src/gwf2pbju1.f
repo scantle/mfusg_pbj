@@ -4,6 +4,10 @@ C ---- by Leland Scantlebury and James R. Craig
 C -----------------------------------------------------------------------------
       module pbjmodule
         integer :: nsegments
+        integer :: IPBJCB                                   ! Write CBC flag
+        integer :: pbjmode                                  ! 0-spec head, 1-drain, 2-head dep
+        integer :: condtype                                 ! 0-conductivity, 1-unit conductivity (per len) 2-leakance coeff
+                                                            ! (-1 == not read, head spec mode)
         integer, allocatable, dimension(:,:)   :: segnodes  ! Nodes to which flow is interpolated, for each segment
         integer, allocatable, dimension(:,:,:) :: segIA     ! Off-diagonal location in AMAT of nodes listed in segia
         real*8,  allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
@@ -72,10 +76,41 @@ C-----Identify package, initialize variables
      1' VERSION 1, 7/14/2020 INPUT READ FROM UNIT ',I4)
       nsegments = 0
       
-C-----Read in number of segments and options (TODO: Have options)
+C-----Read in number of segments and IPBJCB flag
       call URDCOM(IN,IOUT,line)
       LLOC=1
       CALL URWORD(LINE,LLOC,ISTART,ISTOP,2,nsegments,R,IOUT,IN)
+      CALL URWORD(LINE,LLOC,ISTART,ISTOP,3,IPBJCB,R,IOUT,IN)
+      
+C-----Read in Mode and Conductance Type
+      call URDCOM(IN,IOUT,line)
+      call URWORD(LINE,LLOC,ISTART,ISTOP,1,I,R,IOUT,IN)
+C-----Identify Mode
+      if (LINE(ISTART:ISTOP)=='HEADSPEC') then
+        pbjmode = 0
+        condtype = -1
+      else if (LINE(ISTART:ISTOP)=='DRAIN') then
+        pbjmode = 1
+      else if (LINE(ISTART:ISTOP)=='EXTHEAD') then
+        pbjmode = 2
+      else
+        write(IOUT,*) ' INVALID PBJ PACKAGE MODE'
+        call USTOP(' ')
+      end if
+C-----Identify Conductivity Type
+      if (pbjmode /= 0) then
+        call URWORD(LINE,LLOC,ISTART,ISTOP,2,I,R,IOUT,IN)
+        if (LINE(ISTART:ISTOP)=='CONDUCTANCE') then
+          condtype = 0
+        else if (LINE(ISTART:ISTOP)=='UNITCOND') then
+          condtype = 1
+        else if (LINE(ISTART:ISTOP)=='LEAKCOEF') then
+          condtype = 2
+        else
+          write(IOUT,*) ' INVALID PBJ PACKAGE CONDUCTIVITY TYPE'
+          call USTOP(' ')
+        end if
+      end if
       
 C-----Initialize Arrays based upon nsegments
       call initialize_pbj_arrays()
