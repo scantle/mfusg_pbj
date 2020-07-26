@@ -5,6 +5,7 @@ C -----------------------------------------------------------------------------
       module pbjmodule
         integer :: nsegments
         integer :: IPBJCB                                   ! Write CBC flag
+        integer :: IPRPBJ=1                                 ! LST Printout flag (hardcoded, for now)
         integer :: pbjmode                                  ! 0-spec head, 1-drain, 2-head dep
         integer :: condtype                                 ! 0-conductivity, 1-unit conductivity (per len) 2-leakance coeff
                                                             ! (-1 == not read, head spec mode)
@@ -12,7 +13,9 @@ C -----------------------------------------------------------------------------
         integer, allocatable, dimension(:,:,:) :: segIA     ! Off-diagonal location in AMAT of nodes listed in segia
         real*8,  allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
         real*8,  allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
-        real,    allocatable, dimension(:)     :: cond      ! Segment conductivity
+        real  ,  allocatable, dimension(:)     :: seglens   ! Segment lengths (for unit conductivity, etc)
+        real,    allocatable, dimension(:,:)   :: cond      ! Segment conductivity
+        character(len=16),    dimension(0)    :: PBJAUX    ! Junk
         double precision, parameter :: zero=0.0D0
         
       contains
@@ -131,7 +134,7 @@ C-----Read segment start/end elevations
       call U1DREL(elevtemp,ANAME(3),nsegments*2,K,IN,IOUT)
       
 C-----Read conductances (currently do not vary by stress period)
-      call U1DREL(cond,ANAME(4),nsegments,K,IN,IOUT)
+CLS      call U1DREL(cond,ANAME(4),nsegments,K,IN,IOUT)
 
 C-----Move temporary arrays to their final resting places
       do i=1, nsegments
@@ -168,23 +171,41 @@ C
 C     SPECIFICATIONS:
 C     ------------------------------------------------------------------
       use pbjmodule
-      USE GLOBAL,       ONLY:IOUT,IFREFM
+      USE GLOBAL,       ONLY:IOUT,IFREFM,NEQS
       integer :: itmp
 C     ------------------------------------------------------------------
-cLS No reason to have any of the parameters vary by SP currently      
-cC-----Identify package
-c      write(IOUT,1)in
-c    1 format(1X,/1X,'PBJ -- POLYLINE BOUNDARY JUNCTION PACKAGE,',
-c     1' VERSION 1, 7/14/2020 INPUT READ FROM UNIT ',I4)
-c      
-cC-----Read ITMP (flag to re-use data or not)
-c      if (IFREFM.EQ.0) then
-c          read(IN,'(I10)') itmp
-c      else
-c          read(IN,*) itmp
-c      end if
-c      
-cC-----
+C-----Identify package
+      write(IOUT,1)in
+    1 format(1X,/1X,'PBJ -- POLYLINE BOUNDARY JUNCTION PACKAGE,',
+     1' VERSION 1, 7/14/2020 INPUT READ FROM UNIT ',I4)
+      
+C-----Read ITMP (flag to re-use data or not)
+      if (IFREFM.EQ.0) then
+        read(IN,'(I10)') itmp
+      else
+        read(IN,*) itmp
+      end if
+
+C-----Process itmp
+      IF(itmp < 0) THEN
+        WRITE(IOUT,7)
+    7   FORMAT(1X,/1X, 'REUSING PBJ VALUES FROM LAST STRESS PERIOD')
+C-----Nothing else to do!
+        return
+      END IF
+      
+C-----If using conductances, read in conductances
+      if ((itmp >= 0).and.(condtype == 0)) then
+!      SUBROUTINE ULSTRDU(NLIST,RLIST,LSTBEG,LDIM,MXLIST,IAL,INPACK,IOUT,
+!     1     LABEL,CAUX,NCAUX,NAUX,IFREFM,NODES,ISCLOC1,ISCLOC2,
+!     2     IPRFLG)
+        CALL ULSTRDU(itmp,cond,1,nsegments,2,1,IN,IOUT,
+     1     'SEGMENT        NODE         CONDUCTANCE1  CONDUCTANCE2',
+     2     PBJAUX,0,0,IFREFM,NEQS,3,4,IPRPBJ)
+      else
+        write(*,*) "OH GOD IMPLEMENT MORE"
+      end if
+      
       return
       end subroutine GWF2PBJU1RP
 
@@ -229,13 +250,13 @@ C-----For each barycentric coordinate add conductances to nodes in AMAT
           do k=1,3
             hw = (bwe(1)*bw(i,k)+bwe(2)*bw(i,k+3))/2  ! head "weight"
             ija = segIA(i,j,k)
-            AMAT(ija) = AMAT(ija) - cond(i)*hw
-            debug = debug + cond(i) * hw * HNEW(segnodes(i,k))
+            AMAT(ija) = AMAT(ija) - cond(i,1)*hw  ! FIX COND
+            debug = debug + cond(i,1) * hw * HNEW(segnodes(i,k))  ! FIX COND
           end do
 C-----Add non-head related terms to RHS
-          estflow = -cond(i)*((bwe(1)*segelevs(i,1)
+          estflow = -cond(i,1)*((bwe(1)*segelevs(i,1)  ! FIX COND
      1                            + bwe(2)*segelevs(i,2)))/2
-          RHS(N) = RHS(N)-cond(i)*((bwe(1)*segelevs(i,1)
+          RHS(N) = RHS(N)-cond(i,1)*((bwe(1)*segelevs(i,1)  ! FIX COND
      1                            + bwe(2)*segelevs(i,2)))/2
 !          write(*,*) '     Segment ', i
 !          write(*,*) '     Heads = ', heads(1), heads(2)
@@ -291,8 +312,8 @@ C-----Calculate flow out of segment, add to cumulative count
         heads(1) = max(heads(1)-segelevs(i,1), zero)
         heads(2) = max(heads(2)-segelevs(i,2), zero)
         avgover = (heads(1)+heads(2))/2
-        Q = -cond(i) * avgover               ! Sign convention: negative = leaving aquifer
-        RATOUT = RATOUT - Q
+        Q = cond(i,1) * avgover               ! Sign convention: positive (+) = leaving aquifer  ! FIX COND
+        RATOUT = RATOUT + Q
       end do
       
 C-----MOVE RATES,VOLUMES & LABELS INTO ARRAYS FOR PRINTING.
@@ -328,7 +349,7 @@ C -----------------------------------------------------------------------------
      1           segIA      (nsegments, 3, 3),
      2           bw         (nsegments, 6),
      3           segelevs   (nsegments, 2),
-     4           cond       (nsegments))
+     4           cond       (nsegments, 2))
       end subroutine initialize_pbj_arrays
 
 C -----------------------------------------------------------------------------
