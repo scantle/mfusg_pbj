@@ -6,7 +6,7 @@ C -----------------------------------------------------------------------------
         integer :: nsegments
         integer :: IPBJCB                                   ! Write CBC flag
         integer :: IPRPBJ=1                                 ! LST Printout flag (hardcoded, for now)
-        integer :: pbjmode                                  ! 0-spec head, 1-drain, 2-head dep
+        integer :: pbjmode                                  ! 0-spec head, 1-drain, 2-stage dep
         integer :: condtype                                 ! 0-conductivity, 1-unit conductivity (per len) 2-leakance coeff
                                                             ! (-1 == not read, head spec mode)
         integer, allocatable, dimension(:,:)   :: segnodes  ! Nodes to which flow is interpolated, for each segment
@@ -94,7 +94,7 @@ C-----Identify Mode
         condtype = -1
       else if (LINE(ISTART:ISTOP)=='DRAIN') then
         pbjmode = 1
-      else if (LINE(ISTART:ISTOP)=='EXTHEAD') then
+      else if (LINE(ISTART:ISTOP)=='EXTSTAGE') then
         pbjmode = 2
       else
         write(IOUT,*) ' INVALID PBJ PACKAGE MODE'
