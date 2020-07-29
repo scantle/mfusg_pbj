@@ -227,8 +227,15 @@ C-----Process itmp
         else
           pbjact = 0
           call GWF2PBJU1R(cond,2,itmp,ANAME(condtype),IN,IOUT,IFREFM)
-        end if
-      end if
+C-----Where possible, pre-process conductances for stress period
+          if (condtype > 0) then
+C-----Unit conductivities & leakance coefficients can be multiplied by segment lengths
+            do i=1, nsegments
+              cond(:,i) = cond(:,i)*seglens(i)
+            end do
+          end if
+        end if !end of itmp check
+      end if !end of pbjmode check
         
       return
       end subroutine GWF2PBJU1RP
