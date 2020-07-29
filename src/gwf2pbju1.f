@@ -16,6 +16,7 @@ C -----------------------------------------------------------------------------
         real*8,  allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
         real  ,  allocatable, dimension(:)     :: seglens   ! Segment lengths (for unit conductivity, etc)
         real,    allocatable, dimension(:,:)   :: cond      ! Segment conductivity
+        real,    allocatable, dimension(:,:)   :: seghead   ! Specified heads (pbjmode=0) or external stage (pbjmode=2)
         double precision, parameter :: zero=0.0D0
         CHARACTER*100 PBJ_VERSION
         DATA PBJ_VERSION /'PBJ -- POLYLINE BOUNDARY JUNCTION PACKAGE,
@@ -140,9 +141,6 @@ C-----Read segment lengths (if required by condtype)
       if (condtype > 0) then
         call U1DREL(seglens,ANAME(4),nsegments,K,IN,IOUT)
       end if
-      
-C-----Read conductances (currently do not vary by stress period)
-CLS      call U1DREL(cond,ANAME(4),nsegments,K,IN,IOUT)
 
 C-----Move temporary arrays to their final resting places
       do i=1, nsegments
@@ -173,7 +171,7 @@ C -----------------------------------------------------------------------------
 
       subroutine GWF2PBJU1RP(IN)
 C     ******************************************************************
-C     Read segment conductances
+C     Read in stress period (time-varying) values
 C     ******************************************************************
 C
 C     SPECIFICATIONS:
@@ -185,32 +183,51 @@ C     ------------------------------------------------------------------
       DATA ANAME(0) /'        CONDUCTIVITY'/
       DATA ANAME(1) /'   UNIT CONDUCTIVITY'/
       DATA ANAME(2) /' LEAKANCE COEFFICENT'/
+      CHARACTER*20 HNAME(0:2)
+      DATA ANAME(0) /'      SPECIFIED HEAD'/
+      DATA ANAME(1) /''/
+      DATA ANAME(2) /'      EXTERNAL STAGE'/
 C     ------------------------------------------------------------------
 C-----Identify package
-      write(IOUT,1) trim(PBJ_VERSION), in
-    1 format(1X,/1X,A,I4)
+      write(IOUT,6) trim(PBJ_VERSION), in
+    6 format(1X,/1X,A,I4)
       
+C-----SPECIFIED HEADS or EXTERNAL STAGE
+      if (pbjmode /= 1) then
 C-----Read ITMP (flag to re-use data or not)
-      if (IFREFM.EQ.0) then
-        read(IN,'(I10)') itmp
-      else
-        read(IN,*) itmp
-      end if
-
+        if (IFREFM.EQ.0) then
+          read(IN,'(I10)') itmp
+        else
+          read(IN,*) itmp
+        end if
 C-----Process itmp
-      IF(itmp < 0) THEN
-        WRITE(IOUT,7)
-    7   FORMAT(1X,/1X, 'REUSING PBJ VALUES FROM LAST STRESS PERIOD')
-C-----Nothing else to do!
-        return
-      END IF
+        IF(itmp < 0) THEN
+          WRITE(IOUT,7) 'REUSING PBJ ',trim(HNAME(pbjmode))
+    7     FORMAT(1X,/1X,2A,' VALUES FROM LAST STRESS PERIOD')
+C-----Read in values
+        else
+          pbjact = 0
+          call GWF2PBJU1R(seghead,2,itmp,HNAME(pbjmode),IN,IOUT,IFREFM)
+        end if
+      end if
       
-C-----If using conductances, read in conductances
-      if ((itmp >= 0)) then
-        pbjact = 0
-        call GWF2PBJU1R(cond,2,itmp,ANAME(condtype),IN,IOUT,IFREFM)
-      else
-        pbjact = 1
+C-----CONDUCTANCES
+      if (pbjmode > 0) then
+C-----Read ITMP (flag to re-use data or not)
+        if (IFREFM.EQ.0) then
+          read(IN,'(I10)') itmp
+        else
+          read(IN,*) itmp
+        end if
+C-----Process itmp
+        if(itmp < 0) THEN
+          WRITE(IOUT,8) trim(ANAME(condtype))
+    8     FORMAT(1X,/1X, 
+     1         'REUSING PBJ ',A,' VALUES FROM LAST STRESS PERIOD')
+        else
+          pbjact = 0
+          call GWF2PBJU1R(cond,2,itmp,ANAME(condtype),IN,IOUT,IFREFM)
+        end if
       end if
         
       return
@@ -483,6 +500,9 @@ C -----------------------------------------------------------------------------
      3           segelevs   (2, nsegments),
      4           seglens    (nsegments),
      5           cond       (2,nsegments))
+        if (pbjmode==1) then
+          allocate(seghead(2, nsegments))
+        end if
       end subroutine initialize_pbj_arrays
 
 C -----------------------------------------------------------------------------
