@@ -12,15 +12,15 @@ C -----------------------------------------------------------------------------
         integer, allocatable, dimension(:,:)   :: segnodes  ! Nodes to which flow is interpolated, for each segment
         integer, allocatable, dimension(:,:,:) :: segIA     ! Off-diagonal location in AMAT of nodes listed in segia
         integer, allocatable, dimension(:)     :: pbjact    ! Active nodes for SP (1-active, 0-inactive)
-        real*8,  allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
-        real*8,  allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
-        real  ,  allocatable, dimension(:)     :: seglens   ! Segment lengths (for unit conductivity, etc)
-        real,    allocatable, dimension(:,:)   :: cond      ! Segment conductivity
-        real,    allocatable, dimension(:,:)   :: seghead   ! Specified heads (pbjmode=0) or external stage (pbjmode=2)
+        real,    allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
+        real,    allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
+        real,    allocatable, dimension(:)     :: seglens   ! Segment lengths (for unit conductivity, etc)
+        real*8,  allocatable, dimension(:,:)   :: cond      ! Segment conductivity
+        real*8,  allocatable, dimension(:,:)   :: seghead   ! Specified heads (pbjmode=0) or external stage (pbjmode=2)
         double precision, parameter :: zero=0.0D0
         CHARACTER*100 PBJ_VERSION
         DATA PBJ_VERSION /'PBJ -- POLYLINE BOUNDARY JUNCTION PACKAGE,
-     1 VERSION 1, 7/14/2020 INPUT READ FROM UNIT '/
+     1 VERSION 1, 7/14/2020 INPUT READ FROM UNIT'/
         
       contains
 C -----------------------------------------------------------------------------
@@ -79,7 +79,7 @@ C     ------------------------------------------------------------------
       
 C-----Identify package, initialize variables
       write(IOUT,1) trim(PBJ_VERSION), in
-    1 format(1X,/1X,A,I4)
+    1 format(1X,/1X,A,I5)
       nsegments = 0
       
 C-----Read in number of segments and IPBJCB flag
@@ -190,7 +190,7 @@ C     ------------------------------------------------------------------
 C     ------------------------------------------------------------------
 C-----Identify package
       write(IOUT,6) trim(PBJ_VERSION), in
-    6 format(1X,/1X,A,I4)
+    6 format(1X,/1X,A,I5)
       
 C-----SPECIFIED HEADS or EXTERNAL STAGE
       if (pbjmode /= 1) then
@@ -227,8 +227,15 @@ C-----Process itmp
         else
           pbjact = 0
           call GWF2PBJU1R(cond,2,itmp,ANAME(condtype),IN,IOUT,IFREFM)
-        end if
-      end if
+C-----Where possible, pre-process conductances for stress period
+          if (condtype > 0) then
+C-----Unit conductivities & leakance coefficients can be multiplied by segment lengths
+            do i=1, nsegments
+              cond(:,i) = cond(:,i)*seglens(i)
+            end do
+          end if
+        end if !end of itmp check
+      end if !end of pbjmode check
         
       return
       end subroutine GWF2PBJU1RP
@@ -245,7 +252,7 @@ C     ------------------------------------------------------------------
       use pbjmodule
       use GLOBAL,     ONLY:IBOUND,HNEW,RHS,AMAT,IA
       integer            :: h, i, j, k, N, ija
-      double precision   :: heads(2), bwe(2), hw, debug, estflow
+      double precision   :: heads(2), bwe(2), segfunc, debug, estflow
 C     ------------------------------------------------------------------
       
 C-----If no segments, return
@@ -272,16 +279,17 @@ C-----Calculate "effective" weights (0 if head below elevation)
 C-----For each barycentric coordinate add conductances to nodes in AMAT
           n = segnodes(j,i)                           ! Current node
           do k=1,3
-            hw = (bwe(1)*bw(k,i)+bwe(2)*bw(k+3,i))/2  ! head "weight"
+            segfunc = (cond(1,i)*bwe(1)*bw(k,i)+      ! Segment function evaluation
+     1                 cond(2,i)*bwe(2)*bw(k+3,i))/2  ! numerically integrated
             ija = segIA(k,j,i)
-            AMAT(ija) = AMAT(ija) - cond(i,1)*hw  ! FIX COND
-            debug = debug + cond(i,1) * hw * HNEW(segnodes(k,i))  ! FIX COND
+            AMAT(ija) = AMAT(ija) - segfunc
+            !debug = debug + segfunc * HNEW(segnodes(k,i))  ! FIX COND
           end do
 C-----Add non-head related terms to RHS
-          estflow = -cond(i,1)*((bwe(1)*segelevs(1,i)  ! FIX COND
-     1                            + bwe(2)*segelevs(2,i)))/2
-          RHS(N) = RHS(N)-cond(i,1)*((bwe(1)*segelevs(1,i)  ! FIX COND
-     1                            + bwe(2)*segelevs(2,i)))/2
+!          estflow = -1*((cond(1,i)*bwe(1)*segelevs(1,i)
+!     1                 + cond(2,i)*bwe(2)*segelevs(2,i)))/2
+          RHS(N) = RHS(N)-((cond(1,i)*bwe(1)*segelevs(1,i)
+     1                      + cond(2,i)*bwe(2)*segelevs(2,i)))/2
 !          write(*,*) '     Segment ', i
 !          write(*,*) '     Heads = ', heads(1), heads(2)
 !          write(*,*) 'Total AMAT = ', debug
@@ -326,8 +334,8 @@ C-----Loop over segments calculate total segment flow
 C-----Interpolate heads to segment start/end
         heads = zero
         do j=1,3
-          heads(1) = heads(1) + HNEW(segnodes(j,i)) * bw(i,j  )
-          heads(2) = heads(2) + HNEW(segnodes(j,i)) * bw(i,j+3)
+          heads(1) = heads(1) + HNEW(segnodes(j,i)) * bw(j  ,i)
+          heads(2) = heads(2) + HNEW(segnodes(j,i)) * bw(j+3,i)
         end do
 C-----Move to next segment if heads are both below elevation
         if ((heads(1) <= segelevs(1,i)).and. 
@@ -335,8 +343,7 @@ C-----Move to next segment if heads are both below elevation
 C-----Calculate flow out of segment, add to cumulative count
         heads(1) = max(heads(1)-segelevs(1,i), zero)
         heads(2) = max(heads(2)-segelevs(2,i), zero)
-        avgover = (heads(1)+heads(2))/2
-        Q = cond(i,1) * avgover               ! Sign convention: positive (+) = leaving aquifer  ! FIX COND
+        Q = ((cond(1,i)*heads(1))+(cond(2,i)*heads(2)))/2        ! Sign convention: positive (+) = leaving aquifer
         RATOUT = RATOUT + Q
       end do
       
@@ -370,7 +377,7 @@ C     ******************************************************************
 C     Read in a list of values to an array, intended for
 C     reading stress period arrays in the PBJ package.
 C     Arguments:
-C      - rlist array to be read into (ncol,nlst)
+C      - rlist array to be read into (ncol,nlst) (real*8)
 C      - ncol  how many "columns" of data to be read in
 C      - nlst  number of values to be read in (e.g. itmp)
 C      - label name of the data type being read in, be to printed in LST
@@ -383,7 +390,7 @@ C     ------------------------------------------------------------------
       USE pbjmodule
       integer,intent(in)               :: nlst,ncol,INPACK,IOUT,IFREFM
       integer                          :: i, j, iseg, LLOC, ICLOSE
-      real,intent(inout)               :: rlist(ncol,nlst)
+      real*8,intent(inout)             :: rlist(ncol,nlst)
       real                             :: istream(ncol), SFAC
       character*(*),intent(in)         :: label
       character*200                    :: line, outline, FNAME
