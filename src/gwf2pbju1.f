@@ -24,9 +24,9 @@ C -----------------------------------------------------------------------------
         
       contains
 C -----------------------------------------------------------------------------
-        integer function find_n2m_inJA(n, m) result(ija)
-          use GLOBAL,     ONLY:IA,JA
-          integer, intent(in)       :: n,m
+        integer function find_n2m_inJA(n, m, seg) result(ija)
+          use GLOBAL,     ONLY:IOUT,IA,JA
+          integer, intent(in)       :: n,m,seg
           integer                   :: i
       
           ija = -1
@@ -42,7 +42,7 @@ C -----------------------------------------------------------------------------
           end do
           if (ija < 0) then            ! Error in number never found
             write(IOUT,*) ' UNCONNECTED NODES LISTED FOR PBJ SEGMENT'
-            write(IOUT,*) 'SEGMENT: ', i, 'NODES: ', m, n
+            write(IOUT,*) 'SEGMENT: ', seg, 'NODES: ', m, n
             call USTOP(' ')
           end if
           return
@@ -152,7 +152,7 @@ C-----Move temporary arrays to their final resting places
 C-----Find connected nodes in JA (needed later for entering into AMAT)
           do k=1, 3
             m = nodetemp((i-1)*3 + k)           ! current off-diag node
-            segIA(k,j,i) = find_n2m_inJA(n,m)
+            segIA(k,j,i) = find_n2m_inJA(n,m,i)
           end do
         end do
         do j=1, 2                               ! Loop over segment ends
