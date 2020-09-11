@@ -16,7 +16,7 @@ C -----------------------------------------------------------------------------
         real,    allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
         real,    allocatable, dimension(:)     :: seglens   ! Segment lengths (for unit conductivity, etc)
         real*8,  allocatable, dimension(:,:)   :: cond      ! Segment conductivity
-        real*8,  allocatable, dimension(:,:)   :: seghead   ! Specified heads (pbjmode=0) or external stage (pbjmode=2)
+        real*8,  allocatable, dimension(:,:)   :: seghead   ! Specified heads (pbjmode=0) or external stage (pbjmode=2) at each end
         double precision, parameter :: zero=0.0D0
         CHARACTER*100 PBJ_VERSION
         DATA PBJ_VERSION /'PBJ -- POLYLINE BOUNDARY JUNCTION PACKAGE,
@@ -134,8 +134,10 @@ C-----Read segment barycentric weights
       call U1DREL(weighttemp,ANAME(2),nsegments*6,K,IN,IOUT)
       
 C-----Read segment start/end elevations
-      allocate(elevtemp(nsegments*2))           ! 1 elevation for every segment start/end
-      call U1DREL(elevtemp,ANAME(3),nsegments*2,K,IN,IOUT)
+      if (pbjmode /= 0) then
+        allocate(elevtemp(nsegments*2))           ! 1 elevation for every segment start/end
+        call U1DREL(elevtemp,ANAME(3),nsegments*2,K,IN,IOUT)
+      end if
       
 C-----Read segment lengths (if required by condtype)
       if (condtype > 0) then
@@ -155,9 +157,11 @@ C-----Find connected nodes in JA (needed later for entering into AMAT)
             segIA(k,j,i) = find_n2m_inJA(n,m,i)
           end do
         end do
-        do j=1, 2                               ! Loop over segment ends
-          segelevs(j,i) = elevtemp((i-1)*2 + j)
-        end do
+        if (pbjmode /= 0) then                    ! Elev not needed for spec head
+          do j=1, 2                               ! Loop over segment ends
+            segelevs(j,i) = elevtemp((i-1)*2 + j)
+          end do
+        end if
       end do
       
 C-----Deallocate
@@ -185,7 +189,7 @@ C     ------------------------------------------------------------------
       DATA ANAME(2) /' LEAKANCE COEFFICENT'/
       CHARACTER*20 HNAME(0:2)
       DATA ANAME(0) /'      SPECIFIED HEAD'/
-      DATA ANAME(1) /''/
+      DATA ANAME(1) /''/                     !PBJmode 1 (Drain) only requires time variant conductivities
       DATA ANAME(2) /'      EXTERNAL STAGE'/
 C     ------------------------------------------------------------------
 C-----Identify package
@@ -194,6 +198,7 @@ C-----Identify package
       
 C-----SPECIFIED HEADS or EXTERNAL STAGE
       if (pbjmode /= 1) then
+        qspec = 0.0          ! Reset
 C-----Read ITMP (flag to re-use data or not)
         if (IFREFM.EQ.0) then
           read(IN,'(I10)') itmp
@@ -253,50 +258,78 @@ C     ------------------------------------------------------------------
       use GLOBAL,     ONLY:IBOUND,HNEW,RHS,AMAT,IA
       integer            :: h, i, j, k, N, ija
       double precision   :: heads(2), bwe(2), segfunc, debug, estflow
+      double precision, parameter :: bignum = 10.0**10.0
 C     ------------------------------------------------------------------
       
 C-----If no segments, return
       if (nsegments <= 0) return
-      
-C-----Loop over segments
-      do i=1, nsegments
-C-----Interpolate to get current segment heads (start/end)
-        heads = zero
-        do j=1,3
-          heads(1) = heads(1) + HNEW(segnodes(j,i)) * bw(j  ,i)
-          heads(2) = heads(2) + HNEW(segnodes(j,i)) * bw(j+3,i)
-        end do
-C-----Move to next segment if heads are both below elevation
-        if ((heads(1) <= segelevs(1,i)).and. 
-     1      (heads(2) <= segelevs(2,i))) cycle
-C-----Calculate "effective" weights (0 if head below elevation)
-        do j=1,3
-          debug = zero
-          bwe(1) = bw(j  ,i)
-          bwe(2) = bw(j+3,i)
-          if (heads(1) <= segelevs(1,i)) bwe(1) = zero
-          if (heads(2) <= segelevs(2,i)) bwe(2) = zero
-C-----For each barycentric coordinate add conductances to nodes in AMAT
-          n = segnodes(j,i)                           ! Current node
-          do k=1,3
-            segfunc = (cond(1,i)*bwe(1)*bw(k,i)+      ! Segment function evaluation
-     1                 cond(2,i)*bwe(2)*bw(k+3,i))/2  ! numerically integrated
-            ija = segIA(k,j,i)
-            AMAT(ija) = AMAT(ija) - segfunc
-            !debug = debug + segfunc * HNEW(segnodes(k,i))  ! FIX COND
+
+C-----------------------------------------------------------------------
+C-----PBJ Mode 0 - Specified heads
+      if (pbjmode == 0) then
+        do i=1, nsegments
+C-----For each segment, add to AMAT and RHS for each triangle connection
+          do j=1,3
+            bwe(1) = bw(j  ,i)
+            bwe(2) = bw(j+3,i)            
+            n = segnodes(j,i)                           ! Current node
+            do k=1,3
+C-----Add giant conductance to AMAT
+              segfunc = (bignum*bwe(1)*bw(k,i)+      ! Segment function evaluation
+     1                   bignum*bwe(2)*bw(k+3,i))/2  ! numerically integrated
+              ija = segIA(k,j,i)
+              AMAT(ija) = AMAT(ija) - segfunc
+            end do
+C-----Add giant conductance to RHS, with specified head
+            RHS(n) = RHS(n)-((bignum*bwe(1)*seghead(1,i)
+     1                      + bignum*bwe(2)*seghead(2,i)))/2
           end do
+        end do ! end segment loop
+      else
+C-----------------------------------------------------------------------
+
+C-----------------------------------------------------------------------
+C-----PBJ Mode > 0 - Drain or External Heads
+C-----Loop over segments
+        do i=1, nsegments
+C-----Interpolate to get current segment heads (start/end)
+          heads = zero
+          do j=1,3
+            heads(1) = heads(1) + HNEW(segnodes(j,i)) * bw(j  ,i)
+            heads(2) = heads(2) + HNEW(segnodes(j,i)) * bw(j+3,i)
+          end do
+C-----Move to next segment if heads are both below elevation
+          if ((heads(1) <= segelevs(1,i)).and. 
+     1        (heads(2) <= segelevs(2,i))) cycle
+C-----Calculate "effective" weights (0 if head below elevation)
+          do j=1,3
+            debug = zero
+            bwe(1) = bw(j  ,i)
+            bwe(2) = bw(j+3,i)
+            if (heads(1) <= segelevs(1,i)) bwe(1) = zero
+            if (heads(2) <= segelevs(2,i)) bwe(2) = zero
+C-----For each barycentric coordinate add conductances to nodes in AMAT
+            n = segnodes(j,i)                           ! Current node
+            do k=1,3
+              segfunc = (cond(1,i)*bwe(1)*bw(k,i)+      ! Segment function evaluation
+     1                   cond(2,i)*bwe(2)*bw(k+3,i))/2  ! numerically integrated
+              ija = segIA(k,j,i)
+              AMAT(ija) = AMAT(ija) - segfunc
+              !debug = debug + segfunc * HNEW(segnodes(k,i))  ! FIX COND
+            end do
 C-----Add non-head related terms to RHS
-!          estflow = -1*((cond(1,i)*bwe(1)*segelevs(1,i)
-!     1                 + cond(2,i)*bwe(2)*segelevs(2,i)))/2
-          RHS(N) = RHS(N)-((cond(1,i)*bwe(1)*segelevs(1,i)
+!            estflow = -1*((cond(1,i)*bwe(1)*segelevs(1,i)
+!     1                   + cond(2,i)*bwe(2)*segelevs(2,i)))/2
+            RHS(N) = RHS(N)-((cond(1,i)*bwe(1)*segelevs(1,i)
      1                      + cond(2,i)*bwe(2)*segelevs(2,i)))/2
-!          write(*,*) '     Segment ', i
-!          write(*,*) '     Heads = ', heads(1), heads(2)
-!          write(*,*) 'Total AMAT = ', debug
-!          write(*,*) '       RHS = ', estflow
-!          write(*,*) '      Flow = ', debug + estflow
+!           write(*,*) '     Segment ', i
+!           write(*,*) '     Heads = ', heads(1), heads(2)
+!           write(*,*) 'Total AMAT = ', debug
+!           write(*,*) '       RHS = ', estflow
+!           write(*,*) '      Flow = ', debug + estflow
+          end do
         end do
-      end do      
+      end if
       
       end subroutine GWF2PBJU1FM
 
@@ -328,8 +361,18 @@ C-----TODO: Handle cell-by-cell flow calculations/output
 C-----No segments, no service
       if (nsegments <= 0) return
       
-C-----Loop over segments calculate total segment flow
       RATOUT = zero
+C-----------------------------------------------------------------------
+C-----PBJ Mode 0 - Specified heads
+      if (pbjmode == 0) then
+        ! TODO - understood as change in head of the three nodes
+        ! due to "infinite" conductivity
+      else
+C-----------------------------------------------------------------------
+
+C-----------------------------------------------------------------------
+C-----PBJ Mode > 0 - Drain or External Heads
+C-----Loop over segments calculate total segment flow
       do i=1, nsegments
 C-----Interpolate heads to segment start/end
         heads = zero
@@ -346,7 +389,9 @@ C-----Calculate flow out of segment, add to cumulative count
         Q = ((cond(1,i)*heads(1))+(cond(2,i)*heads(2)))/2        ! Sign convention: positive (+) = leaving aquifer
         RATOUT = RATOUT + Q
       end do
-      
+      end if
+C-----------------------------------------------------------------------
+
 C-----MOVE RATES,VOLUMES & LABELS INTO ARRAYS FOR PRINTING.
       ROUT=RATOUT
       VBVL(3,MSUM)=zero
