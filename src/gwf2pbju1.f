@@ -165,7 +165,8 @@ C-----Find connected nodes in JA (needed later for entering into AMAT)
       end do
       
 C-----Deallocate
-      deallocate(nodetemp, weighttemp, elevtemp)
+      deallocate(nodetemp, weighttemp)
+      if (pbjmode /= 0) deallocate(elevtemp)
       
 C-----Return
       return
@@ -188,9 +189,9 @@ C     ------------------------------------------------------------------
       DATA ANAME(1) /'   UNIT CONDUCTIVITY'/
       DATA ANAME(2) /' LEAKANCE COEFFICENT'/
       CHARACTER*20 HNAME(0:2)
-      DATA ANAME(0) /'      SPECIFIED HEAD'/
-      DATA ANAME(1) /''/                     !PBJmode 1 (Drain) only requires time variant conductivities
-      DATA ANAME(2) /'      EXTERNAL STAGE'/
+      DATA HNAME(0) /'      SPECIFIED HEAD'/
+      DATA HNAME(1) /''/                     !PBJmode 1 (Drain) only requires time variant conductivities
+      DATA HNAME(2) /'      EXTERNAL STAGE'/
 C     ------------------------------------------------------------------
 C-----Identify package
       write(IOUT,6) trim(PBJ_VERSION), in
@@ -268,11 +269,12 @@ C-----------------------------------------------------------------------
 C-----PBJ Mode 0 - Specified heads
       if (pbjmode == 0) then
         do i=1, nsegments
+          if (pbjact(i)==0) cycle                       ! Skip inactive segments
 C-----For each segment, add to AMAT and RHS for each triangle connection
           do j=1,3
             bwe(1) = bw(j  ,i)
             bwe(2) = bw(j+3,i)            
-            n = segnodes(j,i)                           ! Current node
+            n = segnodes(j,i)                        ! Current node
             do k=1,3
 C-----Add giant conductance to AMAT
               segfunc = (bignum*bwe(1)*bw(k,i)+      ! Segment function evaluation
@@ -281,17 +283,18 @@ C-----Add giant conductance to AMAT
               AMAT(ija) = AMAT(ija) - segfunc
             end do
 C-----Add giant conductance to RHS, with specified head
-            RHS(n) = RHS(n)-((bignum*bwe(1)*seghead(1,i)
-     1                      + bignum*bwe(2)*seghead(2,i)))/2
+            RHS(n) = RHS(n)-(bignum*bwe(1)*seghead(1,i)
+     1                     + bignum*bwe(2)*seghead(2,i))/2
           end do
         end do ! end segment loop
-      else
 C-----------------------------------------------------------------------
 
 C-----------------------------------------------------------------------
-C-----PBJ Mode > 0 - Drain or External Heads
+C-----PBJ Mode 1 - Drain or External Heads
+      else if (pbjmode == 1) then
 C-----Loop over segments
-        do i=1, nsegments
+        do i=1, nsegments          
+          if (pbjact(i)==0) cycle                       ! Skip inactive segments
 C-----Interpolate to get current segment heads (start/end)
           heads = zero
           do j=1,3
@@ -317,20 +320,55 @@ C-----For each barycentric coordinate add conductances to nodes in AMAT
               AMAT(ija) = AMAT(ija) - segfunc
               !debug = debug + segfunc * HNEW(segnodes(k,i))  ! FIX COND
             end do
-C-----Add non-head related terms to RHS
-!            estflow = -1*((cond(1,i)*bwe(1)*segelevs(1,i)
-!     1                   + cond(2,i)*bwe(2)*segelevs(2,i)))/2
-            RHS(N) = RHS(N)-((cond(1,i)*bwe(1)*segelevs(1,i)
-     1                      + cond(2,i)*bwe(2)*segelevs(2,i)))/2
-!           write(*,*) '     Segment ', i
-!           write(*,*) '     Heads = ', heads(1), heads(2)
-!           write(*,*) 'Total AMAT = ', debug
-!           write(*,*) '       RHS = ', estflow
-!           write(*,*) '      Flow = ', debug + estflow
+C-----Add terms to RHS
+              RHS(N) = RHS(N)-(cond(1,i)*bwe(1)*segelevs(1,i)
+     1                       + cond(2,i)*bwe(2)*segelevs(2,i))/2
           end do
         end do
+C-----------------------------------------------------------------------
+
+C-----------------------------------------------------------------------
+C-----PBJ Mode 2 - External Heads (River condition)
+      else
+C-----Loop over segments
+        do i=1, nsegments          
+          if (pbjact(i)==0) cycle                       ! Skip inactive segments
+C-----Interpolate to get current segment heads (start/end)
+          heads = zero
+          do j=1,3
+            heads(1) = heads(1) + HNEW(segnodes(j,i)) * bw(j  ,i)
+            heads(2) = heads(2) + HNEW(segnodes(j,i)) * bw(j+3,i)
+          end do
+          do j=1,3
+            bwe(1) = bw(j  ,i)
+            bwe(2) = bw(j+3,i)
+C-----For each barycentric coordinate add conductances to nodes in AMAT
+            n = segnodes(j,i)                           ! Current node
+C-----Compare average gw head to average stream elevation, if lower then percolation conditions
+            if (sum(heads(1:2))/2 >= sum(segelevs(1:2,i))/2) then
+              do k=1,3
+                segfunc = (cond(1,i)*bwe(1)*bw(k,i)+      ! Segment function evaluation
+     1                     cond(2,i)*bwe(2)*bw(k+3,i))/2  ! numerically integrated
+                ija = segIA(k,j,i)
+                AMAT(ija) = AMAT(ija) - segfunc
+              end do
+C-----Add terms to RHS
+              RHS(N) = RHS(N)-((cond(1,i)*bwe(1)*seghead(1,i)
+     1                        + cond(2,i)*bwe(2)*seghead(2,i)))/2
+            else
+C-----Percolation - only add to RHS
+              RHS(N) = RHS(N)-(cond(1,i)*bwe(1)*
+     1                                    (seghead(1,i)-segelevs(1,i))
+     2                        + cond(2,i)*bwe(2)*
+     3                                    (seghead(2,i)-segelevs(2,i))
+     4                        )/2
+            end if
+          end do
+        end do
+C-----------------------------------------------------------------------
       end if
       
+      return
       end subroutine GWF2PBJU1FM
 
 C -----------------------------------------------------------------------------
@@ -365,13 +403,14 @@ C-----No segments, no service
 C-----------------------------------------------------------------------
 C-----PBJ Mode 0 - Specified heads
       if (pbjmode == 0) then
-        ! TODO - understood as change in head of the three nodes
-        ! due to "infinite" conductivity
-      else
+        ! Calculated in GWF2PBJU1BDCHWR using FLOWJA
+        ! No need to add to budget terms here
+        return
 C-----------------------------------------------------------------------
 
 C-----------------------------------------------------------------------
-C-----PBJ Mode > 0 - Drain or External Heads
+C-----PBJ Mode 1 - Drain or External Heads
+      else if (pbjmode == 1) then
 C-----Loop over segments calculate total segment flow
       do i=1, nsegments
 C-----Interpolate heads to segment start/end
@@ -386,11 +425,36 @@ C-----Move to next segment if heads are both below elevation
 C-----Calculate flow out of segment, add to cumulative count
         heads(1) = max(heads(1)-segelevs(1,i), zero)
         heads(2) = max(heads(2)-segelevs(2,i), zero)
-        Q = ((cond(1,i)*heads(1))+(cond(2,i)*heads(2)))/2        ! Sign convention: positive (+) = leaving aquifer
+        Q = (cond(1,i) * heads(1) + cond(2,i) * heads(2))/2        ! Sign convention: positive (+) = leaving aquifer
         RATOUT = RATOUT + Q
       end do
-      end if
+C-----------------------------------------------------------------------      
+
+C-----------------------------------------------------------------------      
+C-----PBJ Mode 2 - External Heads (River condition)
+      else
+C-----Loop over segments calculate total segment flow
+      do i=1, nsegments
+C-----Interpolate heads to segment start/end
+        heads = zero
+        do j=1,3
+          heads(1) = heads(1) + HNEW(segnodes(j,i)) * bw(j  ,i)
+          heads(2) = heads(2) + HNEW(segnodes(j,i)) * bw(j+3,i)
+        end do
+C-----Compare average gw head to average stream elevation, if lower then percolation conditions
+        if (sum(heads(1:2))/2 >= sum(segelevs(1:2,i))/2) then  ! GW Head dependent, RATE=CRIV*(HRIV-HNEW)
+          heads(1) = seghead(1,i) - heads(1)
+          heads(2) = seghead(2,i) - heads(2)
+        else                                                   ! Percolating, RATE=CRIV*(HRIV-RBOT)
+          heads(1) = seghead(1,i) - segelevs(1,i)
+          heads(2) = seghead(2,i) - segelevs(2,i)
+        end if
+        Q = (cond(1,i) * heads(1) + cond(2,i) * heads(2))/2
+        RATOUT = RATOUT + Q
+      end do
+      
 C-----------------------------------------------------------------------
+      end if
 
 C-----MOVE RATES,VOLUMES & LABELS INTO ARRAYS FOR PRINTING.
       ROUT=RATOUT
@@ -538,7 +602,72 @@ C-----Done reading the list.  If file is open/close, close it.
       
       return
       end subroutine GWF2PBJU1R
+
+C -----------------------------------------------------------------------------
+
+      subroutine GWF2PBJU1BDCHWR(KKSTP,KKPER)
+C     ******************************************************************
+C     Computes specified-head ("constant head") budget termf
+C     LS - Not currently run in mfusg.f
+C     ******************************************************************
+C
+C        SPECIFICATIONS:
+C     ------------------------------------------------------------------
+      USE pbjmodule
+      USE GLOBAL, only:IBOUND,IA,FLOWJA
+      USE GWFBASMODULE,ONLY:MSUM,VBVL,VBNM,DELT,PERTIM,TOTIM,ICBCFL,
+     1                      ICHFLG
+      integer                          :: i, j, n, nconn
+      double precision                 :: flow, rate, pbjin, pbjout,
+     1                                    cin, cout, nsum
+      character*16          :: TEXT
+      DATA TEXT /'  PBJ SPEC HEADS'/
+C     ------------------------------------------------------------------
       
+C-----Only run if pbj is in specified head mode
+      if (pbjmode /= 0) return
+      
+      pbjin  = zero
+      pbjout = zero
+      rate   = zero
+      
+C-----TODO: Handle cell-by-cell flow calculations/output      
+      
+C-----Loop over PBJ segments, calculate node water balances
+C-----Assumption: all gains/losses due to PBJ
+      do i=1, nsegments
+        do j=1, 3
+          n = segnodes(j,i)
+          nsum = 0
+          if (IBOUND(n) < 1) cycle
+C-----Loop over all node connections
+          do nconn = IA(N)+1,IA(N+1)-1
+            flow = FLOWJA(nconn)
+            nsum = nsum + flow
+            rate = rate + flow
+          end do
+          if (nsum < 0) then
+            pbjout = pbjout - nsum
+          else
+            pbjin = pbjin + nsum
+          end if
+        end do
+      end do
+      
+C-----Add to GWF Budget
+      CIN=pbjin
+      COUT=pbjout
+      VBVL(1,MSUM)=VBVL(1,MSUM)+CIN*DELT
+      VBVL(2,MSUM)=VBVL(2,MSUM)+COUT*DELT
+      VBVL(3,MSUM)=CIN
+      VBVL(4,MSUM)=COUT
+      VBNM(MSUM)=TEXT
+      MSUM=MSUM+1
+
+      return
+      end subroutine GWF2PBJU1BDCHWR
+
+C -----------------------------------------------------------------------------
 
 C *****************************************************************************
 C -- PBJ Helper Routines
@@ -551,8 +680,9 @@ C -----------------------------------------------------------------------------
      2           bw         (6, nsegments),
      3           segelevs   (2, nsegments),
      4           seglens    (nsegments),
-     5           cond       (2,nsegments))
-        if (pbjmode==1) then
+     5           cond       (2,nsegments),
+     6           pbjact     (nsegments))
+        if (pbjmode /= 1) then
           allocate(seghead(2, nsegments))
         end if
       end subroutine initialize_pbj_arrays
