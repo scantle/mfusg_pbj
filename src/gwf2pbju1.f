@@ -389,7 +389,8 @@ C     ------------------------------------------------------------------
 C
       character*16          :: TEXT
       integer               :: i, j
-      double precision      :: Q, RATOUT, ROUT, heads(2), avgover
+      double precision      :: Q, RATOUT, RATIN, RIN, ROUT, heads(2), 
+     1                         avgover
 C
       DATA TEXT /'    PBJ SEGMENTS'/
 C     ------------------------------------------------------------------
@@ -400,6 +401,7 @@ C-----No segments, no service
       if (nsegments <= 0) return
       
       RATOUT = zero
+      RATIN  = zero
 C-----------------------------------------------------------------------
 C-----PBJ Mode 0 - Specified heads
       if (pbjmode == 0) then
@@ -430,7 +432,7 @@ C-----Calculate flow out of segment, add to cumulative count
       end do
 C-----------------------------------------------------------------------      
 
-C-----------------------------------------------------------------------      
+C-----------------------------------------------------------------------
 C-----PBJ Mode 2 - External Heads (River condition)
       else
 C-----Loop over segments calculate total segment flow
@@ -450,16 +452,22 @@ C-----Compare average gw head to average stream elevation, if lower then percola
           heads(2) = seghead(2,i) - segelevs(2,i)
         end if
         Q = (cond(1,i) * heads(1) + cond(2,i) * heads(2))/2
-        RATOUT = RATOUT + Q
+        if (Q < 0) then
+          RATOUT = RATOUT - Q
+        else
+          RATIN = RATIN + Q
+        end if
       end do
       
 C-----------------------------------------------------------------------
       end if
 
 C-----MOVE RATES,VOLUMES & LABELS INTO ARRAYS FOR PRINTING.
+      RIN=RATIN
       ROUT=RATOUT
-      VBVL(3,MSUM)=zero
+      VBVL(3,MSUM)=RIN
       VBVL(4,MSUM)=ROUT
+      VBVL(1,MSUM)=VBVL(1,MSUM)+RIN*DELT
       VBVL(2,MSUM)=VBVL(2,MSUM)+ROUT*DELT
       VBNM(MSUM)=TEXT
       
