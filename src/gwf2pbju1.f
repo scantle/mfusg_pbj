@@ -3,24 +3,29 @@ C -- Polyline Boundary Junction (PBJ) Package
 C ---- by Leland Scantlebury and James R. Craig
 C -----------------------------------------------------------------------------
       module pbjmodule
-        integer :: nsegments
-        integer :: IPBJCB                                   ! Write CBC flag
-        integer :: IPRPBJ=1                                 ! LST Printout flag (hardcoded, for now)
-        integer :: pbjmode                                  ! 0-spec head, 1-drain, 2-stage dep
-        integer :: condtype                                 ! 0-conductivity, 1-unit conductivity (per len) 2-leakance coeff
-                                                            ! (-1 == not read, head spec mode)
-        integer, allocatable, dimension(:,:)   :: segnodes  ! Nodes to which flow is interpolated, for each segment
-        integer, allocatable, dimension(:,:,:) :: segIA     ! Off-diagonal location in AMAT of nodes listed in segia
-        integer, allocatable, dimension(:)     :: pbjact    ! Active nodes for SP (1-active, 0-inactive)
-        real,    allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
-        real,    allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
-        real,    allocatable, dimension(:)     :: seglens   ! Segment lengths (for unit conductivity, etc)
-        real*8,  allocatable, dimension(:,:)   :: cond      ! Segment conductivity
-        real*8,  allocatable, dimension(:,:)   :: seghead   ! Specified heads (pbjmode=0) or external stage (pbjmode=2) at each end
+        integer,save :: nsegments
+        integer,save :: IPBJCB                                   ! Write CBC flag
+        integer,save :: IPRPBJ=1                                 ! LST Printout flag (hardcoded, for now)
+        integer,save :: pbjmode                                  ! 0-spec head, 1-drain, 2-stage dep
+        integer,save :: condtype                                 ! 0-conductivity, 1-unit conductivity (per len) 2-leakance coeff
+                                                                 ! (-1 == not read, head spec mode)
+        integer,save, allocatable, dimension(:,:)   :: segnodes  ! Nodes to which flow is interpolated, for each segment
+        integer,save, allocatable, dimension(:,:,:) :: segIA     ! Off-diagonal location in AMAT of nodes listed in segia
+        integer,save, allocatable, dimension(:)     :: pbjact    ! Active nodes for SP (1-active, 0-inactive)
+        real,   save, allocatable, dimension(:,:)   :: bw        ! Barycentric coordinates for segment start/end points
+        real,   save, allocatable, dimension(:,:)   :: segelevs  ! Segment start/end point streambed elevations
+        real,   save, allocatable, dimension(:)     :: seglens   ! Segment lengths (for unit conductivity, etc)
+        real*8, save, allocatable, dimension(:,:)   :: cond      ! Segment conductivity
+        real*8, save, allocatable, dimension(:,:)   :: seghead   ! Specified heads (pbjmode=0) or external stage (pbjmode=2) at each end
         double precision, parameter :: zero=0.0D0
-        CHARACTER*100 PBJ_VERSION
+        CHARACTER*100,save :: PBJ_VERSION
         DATA PBJ_VERSION /'PBJ -- POLYLINE BOUNDARY JUNCTION PACKAGE,
      1 VERSION 1, 7/14/2020 INPUT READ FROM UNIT'/
+
+        ! Arrays created to appease the cell-by-cell writing routines
+        ! TODO Support AUX variable (parameters), consider moving segment real values into pbjv
+        real,         save,allocatable, dimension(:,:) :: pbjv    ! Unused input value array (e.g. DRAI, RIVR)
+        character(16),save,allocatable, dimension(:)   :: pbjaux  ! Unusued auxillary variable (parameter) names
         
       contains
 C -----------------------------------------------------------------------------
@@ -388,20 +393,37 @@ C     ------------------------------------------------------------------
       use pbjmodule
 C
       character*16          :: TEXT
-      integer               :: i, j
+      integer               :: i, j, IBD, NAUX=0, NPBJVL=1, IICLNCB=0, 
+     1                         IBDLBL
       double precision      :: Q, RATOUT, RATIN, RIN, ROUT, heads(2), 
-     1                         avgover
+     1                         avgover, nodeweight
 C
       DATA TEXT /'    PBJ SEGMENTS'/
 C     ------------------------------------------------------------------
       
-C-----TODO: Handle cell-by-cell flow calculations/output
-      
 C-----No segments, no service
       if (nsegments <= 0) return
       
+C-----Initialize Cell-By-Cell flag (IBD) and accumulators (RATOUT, RATIN)
+      IBD = 0
+      IBDLBL = 0
       RATOUT = zero
       RATIN  = zero
+      IF(IPBJCB < 0 .AND. ICBCFL /= 0) IBD = -1      ! Print individual rates in LST
+      IF(IPBJCB > 0)                   IBD = ICBCFL  ! Determines list or 3D array in CBB
+
+C-----If Cell-By-Cell to be saved as list, write header
+      if (IBD==2) then
+         CALL UBDSVHDR(IUNSTR,KSTP,KPER,IOUT,IPBJCB,IICLNCB,NODES,
+     1    NNCLNNDS,NCOL,NROW,NLAY,nsegments,NPBJVL,NAUX,IBOUND,
+     2    TEXT,pbjaux,DELT,PERTIM,TOTIM,pbjv)
+      end if
+      
+C-----Clear buffer
+      do n=1, NEQS
+        buff(n) = zero
+      end do
+      
 C-----------------------------------------------------------------------
 C-----PBJ Mode 0 - Specified heads
       if (pbjmode == 0) then
@@ -409,12 +431,13 @@ C-----PBJ Mode 0 - Specified heads
         ! No need to add to budget terms here
         return
 C-----------------------------------------------------------------------
-
+        
 C-----------------------------------------------------------------------
 C-----PBJ Mode 1 - Drain or External Heads
       else if (pbjmode == 1) then
 C-----Loop over segments calculate total segment flow
       do i=1, nsegments
+        rate = zero
 C-----Interpolate heads to segment start/end
         heads = zero
         do j=1,3
@@ -429,6 +452,24 @@ C-----Calculate flow out of segment, add to cumulative count
         heads(2) = max(heads(2)-segelevs(2,i), zero)
         Q = (cond(1,i) * heads(1) + cond(2,i) * heads(2))/2        ! Sign convention: positive (+) = leaving aquifer
         RATOUT = RATOUT + Q
+C-----Print individual rates if requested (IPBJCB<0)
+        if(IBD < 0) then
+          IF(IBDLBL.EQ.0) WRITE(IOUT,61) TEXT,KPER,KSTP
+   61     FORMAT(1X,/1X,A,'   PERIOD ',I8,'   STEP ',I8)
+          WRITE(IOUT,63) i,Q
+   63     FORMAT(1X,'SEGMENT ',I6,'   RATE ',1PG15.6)          
+        end if
+C-----Add Q to buffer for all segment nodes
+        do j=1,3
+          n = segnodes(j,i)
+          nodeweight = (bw(j,i) + bw(j+3,i))/2
+          buff(n) = buff(n) + Q * nodeweight
+C-----If saving cell-by-cell flows in a list, write flow
+          if(IBD == 2) then
+            CALL UBDSVREC(IUNSTR,n,NODES,NNCLNNDS,IPBJCB,IICLNCB,NPBJVL,
+     1    1,NAUX,Q,PBJV(:,N),IBOUND,NCOL,NROW,NLAY)
+          end if
+        end do
       end do
 C-----------------------------------------------------------------------      
 
@@ -457,10 +498,33 @@ C-----Compare average gw head to average stream elevation, if lower then percola
         else
           RATIN = RATIN + Q
         end if
+C-----Print individual rates if requested (IPBJCB<0)
+        if(IBD < 0) then
+          IF(IBDLBL.EQ.0) WRITE(IOUT,61) TEXT,KPER,KSTP
+          WRITE(IOUT,63) i,Q        
+        end if
+C-----Add Q to buffer for all segment nodes
+        do j=1,3
+          n = segnodes(j,i)
+          nodeweight = (bw(j,i) + bw(j+3,i))/2
+          buff(n) = buff(n) + Q * nodeweight
+C-----If saving cell-by-cell flows in a list, write flow
+          if(IBD == 2) then
+            CALL UBDSVREC(IUNSTR,n,NODES,NNCLNNDS,IPBJCB,IICLNCB,NPBJVL,
+     1    1,NAUX,Q,PBJV(:,N),IBOUND,NCOL,NROW,NLAY)
+          end if
+        end do
       end do
       
 C-----------------------------------------------------------------------
       end if
+
+C-----If Cell-by-Cell flows will be saved as a 3D array, call UBUDSV to save them
+      if(IBD == 1) then
+        CALL UBUDSVU(KSTP,KPER,TEXT,IPBJCB,BUFF(1),NODES,
+     1                          IOUT,PERTIM,TOTIM)
+      end if
+      
 
 C-----MOVE RATES,VOLUMES & LABELS INTO ARRAYS FOR PRINTING.
       RIN=RATIN
@@ -482,7 +546,9 @@ C -----------------------------------------------------------------------------
 C-----Deallocate PBJ MEMORY
       USE pbjmodule
 C
-        deallocate(segnodes, bw, segelevs, cond)
+        deallocate(segnodes, segIA, bw, segelevs, seglens, cond, pbjact)
+        deallocate(pbjaux, pbjv)
+        if (pbjmode /= 1) deallocate(seghead)
 C
       RETURN
       END
@@ -690,6 +756,8 @@ C -----------------------------------------------------------------------------
      4           seglens    (nsegments),
      5           cond       (2,nsegments),
      6           pbjact     (nsegments))
+        ! Allocate Unused AUX and Input arrays for CBB-writing routines
+        allocate(pbjaux(1), pbjv(1,nsegments))
         if (pbjmode /= 1) then
           allocate(seghead(2, nsegments))
         end if
