@@ -25,7 +25,7 @@ C -----------------------------------------------------------------------------
         ! Arrays created to appease the cell-by-cell writing routines
         ! TODO Support AUX variable (parameters), consider moving segment real values into pbjv
         real,         save,allocatable, dimension(:,:) :: pbjv    ! Unused input value array (e.g. DRAI, RIVR)
-        character(16),save,allocatable, dimension(:)   :: pbjaux  ! Unusued auxillary variable (parameter) names
+        character(16),save,allocatable, dimension(:)   :: pbjaux  ! Unused auxillary variable (parameter) names
         
       contains
 C -----------------------------------------------------------------------------
@@ -395,7 +395,8 @@ C
       character*16          :: TEXT
       integer               :: i, j, IBD, NAUX=0, NPBJVL=1, IICLNCB=0, 
      1                         IBDLBL
-      double precision      :: Q, RATOUT, RATIN, RIN, ROUT, heads(2), 
+      real                  :: Q
+      double precision      :: RATOUT, RATIN, RIN, ROUT, heads(2), 
      1                         avgover, nodeweight
 C
       DATA TEXT /'    PBJ SEGMENTS'/
